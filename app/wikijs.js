@@ -8,6 +8,7 @@ const { normalizeServer } = require('./webdav');
 const { check: c, isPlainArgs } = require('./security');
 const { publishedImageName } = require('../exporters/common');
 const { t } = require('../core/ui-text');
+const { weeklyCheck } = require('./credential-vault');
 
 /*
  * Publishing guides as Wiki.js 2 pages, through the wiki's GraphQL API.
@@ -207,13 +208,25 @@ class WikiJs {
     this.onStatus(this.status());
   }
 
-  // The OS-user copy keeps the sign-in through an update or reinstall.
+  // The OS-user copy keeps the sign-in through an update or reinstall. Each
+  // write is a DPAPI call on Windows, which security software watches (see
+  // credential-vault.js). A two-step session is renewed about every half
+  // hour, so it's backed up at most once a week: Wiki.js still renews a token
+  // that old (its renewal period is 14 days by default), and otherwise asks
+  // for a code once.
+  backupOf(stored) {
+    const { session, ...credentials } = stored;
+    return { secret: JSON.stringify(stored), check: session ? weeklyCheck({ ...credentials, session: true }) : JSON.stringify(credentials) };
+  }
+
   async backup() {
-    const secret = this.credentials && JSON.stringify(this.stored());
-    if (!this.vault || !secret || this.vaulted === secret) return;
+    const stored = this.stored();
+    if (!this.vault || !stored) return;
+    const { secret, check } = this.backupOf(stored);
+    if (this.vaulted === check) return;
     try {
-      await this.vault.write(VAULT_KEY, secret);
-      this.vaulted = secret;
+      await this.vault.write(VAULT_KEY, secret, check);
+      this.vaulted = check;
     } catch { /* the encrypted file remains the source of the sign-in */ }
   }
 
@@ -225,7 +238,7 @@ class WikiJs {
     try { stored = JSON.parse(await this.vault.read(VAULT_KEY) || 'null'); } catch { return false; }
     if (this.credentials || !stored?.baseUrl || !stored.method) return false;
     this.restore(stored);
-    this.vaulted = JSON.stringify(stored);
+    this.vaulted = this.backupOf(stored).check;
     try { this.save(); } catch { this.loadError = null; this.onStatus(this.status()); }
     return true;
   }

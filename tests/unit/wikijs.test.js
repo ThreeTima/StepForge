@@ -317,6 +317,45 @@ test('a two-step session that ran out is renewed by Wiki.js, and the new token i
   assert.equal(reopened.session.token, wikijs.session.token, 'and is stored');
 });
 
+test('a two-step session renewed every half hour is backed up at most once a week', async (t) => {
+  const server = wiki();
+  server.users['casey@example.com'].tfa = '123456';
+  // Like the Windows vault: a write whose check matches the saved one encrypts nothing.
+  const writes = [];
+  const kept = new Map();
+  const vault = { read: async (key) => kept.get(key) || null, clear: async (key) => { kept.delete(key); },
+    write: async (key, secret, check) => { if (writes.at(-1) === check && kept.has(key)) return; writes.push(check); kept.set(key, secret); } };
+  const { wikijs, directory } = setup(t, server, { vault });
+  await wikijs.connect({ address: 'wiki.example.com', method: 'password', username: 'casey@example.com', password: 'hunter2', code: '123456' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const afterSignIn = writes.length;
+  assert.ok(afterSignIn >= 1);
+  assert.ok(JSON.parse(kept.get('wikijs')).session?.token, 'the backup keeps the session, so a reinstall needs no code');
+
+  // Renewals, as Wiki.js sends them back, are saved but not backed up again.
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  for (let i = 0; i < 48; i += 1) {
+    now += 30 * 60 * 1000;
+    wikijs.session = { token: server.issue('Casey Jones'), expires: now + 30 * 60 * 1000 };
+    wikijs.save();
+  }
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(writes.length, afterSignIn);
+
+  now += 7 * 24 * 60 * 60 * 1000;
+  wikijs.session = { token: server.issue('Casey Jones'), expires: now + 30 * 60 * 1000 };
+  wikijs.save();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(writes.length, afterSignIn + 1);
+  assert.equal(JSON.parse(kept.get('wikijs')).session.token, wikijs.session.token);
+
+  // A restart that finds the backup current doesn't write it again.
+  const restarted = new WikiJs({ directory, safeStorage: wikijs.safeStorage, fetchImpl: server.fetch, vault });
+  assert.equal(await restarted.recover(), false);
+  assert.equal(writes.length, afterSignIn + 1);
+});
+
 test('when Wiki.js ends a two-step session, publishing asks for a code first, then carries on', async (t) => {
   const server = wiki();
   server.users['casey@example.com'].tfa = '123456';

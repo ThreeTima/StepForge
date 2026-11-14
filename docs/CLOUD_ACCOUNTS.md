@@ -45,8 +45,9 @@ unlocked, then restart StepForge.
 On Windows, StepForge also keeps a backup of each sign-in under
 `HKEY_CURRENT_USER\Software\StepForge`, encrypted with DPAPI so only your
 Windows account can read it, so an update or reinstall doesn't sign you out.
-StepForge encrypts the backup when you sign in and decrypts it only when the
-sign-in needs recovering. Both run in PowerShell, which some security software
+StepForge encrypts the backup when you sign in (and at most once a week after
+that for OneDrive and Wiki.js two-step sign-ins, whose tokens keep changing)
+and decrypts it only when the sign-in needs recovering. Both run in PowerShell, which some security software
 reports as DPAPI activity. If you never sign in, nothing is stored there and
 nothing is decrypted. Disconnecting removes the backup.
 

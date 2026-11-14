@@ -2,7 +2,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
-const { createCredentialVault } = require('../../app/credential-vault');
+const { createCredentialVault, weeklyCheck } = require('../../app/credential-vault');
 const { GoogleDrive } = require('../../app/google-drive');
 const { makeTmpDir, rmrf } = require('./helpers');
 
@@ -96,6 +96,22 @@ test('Windows: a saved sign-in is written once, recovered, and not encrypted aga
   // A new sign-in replaces the backup.
   await vaultFor(win).write('client', JSON.stringify({ clientId: 'client', refresh_token: 'other' }));
   assert.equal(win.encrypts().length, 2);
+});
+
+test('Windows: a backup whose check is unchanged is not encrypted again, even if the secret changed', async () => {
+  const win = fakeWindows();
+  await vaultFor(win, 'onedrive').write('client', '{"refresh_token":"one"}', 'same week');
+  await vaultFor(win, 'onedrive').write('client', '{"refresh_token":"two"}', 'same week');
+  assert.equal(win.encrypts().length, 1);
+  await vaultFor(win, 'onedrive').write('client', '{"refresh_token":"three"}', 'next week');
+  assert.equal(win.encrypts().length, 2);
+});
+
+test('weeklyCheck changes with the week, not with the time of day', () => {
+  const monday = Date.parse('2026-11-16T09:00:00Z');
+  assert.equal(weeklyCheck({ a: 1 }, monday), weeklyCheck({ a: 1 }, monday + 60 * 60 * 1000));
+  assert.notEqual(weeklyCheck({ a: 1 }, monday), weeklyCheck({ a: 1 }, monday + 7 * 24 * 60 * 60 * 1000));
+  assert.notEqual(weeklyCheck({ a: 1 }, monday), weeklyCheck({ a: 2 }, monday));
 });
 
 test('Windows: a backup from an earlier version, without a fingerprint, is rewritten once', async () => {

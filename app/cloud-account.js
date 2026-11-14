@@ -8,6 +8,7 @@ const { atomicWriteFileSync } = require('../core/util');
 const { progressBody } = require('../core/transfer-meter');
 const { FolderStorage } = require('../core/folder-storage');
 const { t } = require('../core/ui-text');
+const { weeklyCheck } = require('./credential-vault');
 
 /*
  * What OneDrive, Dropbox and Nextcloud/WebDAV sync have in common: sign-in
@@ -79,13 +80,25 @@ class CloudAccount {
   }
 
   // The OS-user backup keeps the sign-in through an update or reinstall.
+  // Each write is a DPAPI call on Windows, which security software watches
+  // (see credential-vault.js), so the backup leaves out the access token,
+  // which changes every hour. A refresh token that the service replaces on
+  // every refresh (Microsoft does) is backed up again at most once a week;
+  // replaced ones stay valid, for 90 days at Microsoft.
+  backupOf(credentials) {
+    const { access_token: _access, expiresAt: _expires, ...kept } = credentials;
+    const { refresh_token: _refresh, ...lasting } = kept;
+    return { secret: JSON.stringify(kept), check: kept.rotates ? weeklyCheck(lasting) : JSON.stringify(kept) };
+  }
+
   async backup() {
     const credentials = this.credentials;
-    const secret = credentials && JSON.stringify(credentials);
-    if (!this.vault || !secret || this.vaulted === secret) return;
+    if (!this.vault || !credentials) return;
+    const { secret, check } = this.backupOf(credentials);
+    if (this.vaulted === check) return;
     try {
-      await this.vault.write(this.key, secret);
-      if (this.credentials === credentials) this.vaulted = secret;
+      await this.vault.write(this.key, secret, check);
+      if (this.credentials === credentials) this.vaulted = check;
     } catch { /* the encrypted primary file remains the source of credentials */ }
   }
 
@@ -99,7 +112,7 @@ class CloudAccount {
       if (this.credentials || this.signIn || !this.accepts(stored)) return false;
       this.credentials = stored;
       this.loadError = null;
-      this.vaulted = JSON.stringify(stored);
+      this.vaulted = this.backupOf(stored).check;
       try { this.save(); } catch { /* keep the recovered sign-in for this session */ }
       return true;
     })();
@@ -314,8 +327,10 @@ class CloudAccount {
   /** Keep what a token response returned, with its expiry time. */
   tokens(response, previous = {}) {
     if (!response?.access_token) throw new Error(`${this.label} did not return an access token. Try signing in again.`);
+    // Whether the service replaces the refresh token when it's used (see backupOf).
+    const rotated = Boolean(previous.refresh_token && response.refresh_token && response.refresh_token !== previous.refresh_token);
     return { ...previous, access_token: response.access_token, refresh_token: response.refresh_token || previous.refresh_token,
-      expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000 };
+      expiresAt: Date.now() + Number(response.expires_in || 3600) * 1000, ...(rotated ? { rotates: true } : {}) };
   }
 
   /** A current OAuth access token, refreshed when it's about to expire. */
