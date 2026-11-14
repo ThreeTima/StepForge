@@ -441,3 +441,111 @@ test('WebDAV creates missing folders even when the server answers in plain text'
   assert.deepEqual([...folders], ['/dav/StepForge', '/dav/StepForge/parts']);
   assert.ok(files.has(`/dav/StepForge/parts/${sha}`));
 });
+
+// ---- OS-user backup -------------------------------------------------------
+
+function countingVault() {
+  const entries = new Map();
+  const writes = [];
+  return {
+    entries, writes,
+    read: async (key) => entries.get(key) || null,
+    // Like the Windows vault: a write whose check matches the saved one encrypts nothing.
+    write: async (key, secret, check) => {
+      if (writes.at(-1)?.check === check && entries.has(key)) return;
+      writes.push({ secret, check }); entries.set(key, secret);
+    },
+    clear: async (key) => { entries.delete(key); },
+  };
+}
+const settle = () => new Promise((resolve) => setTimeout(resolve, 10));
+const WEEK = 7 * 24 * 60 * 60 * 1000;
+
+test('a refresh token replaced on every refresh is backed up at most once a week, without access tokens', async (t) => {
+  let now = Date.parse('2026-11-16T09:00:00Z');
+  t.mock.method(Date, 'now', () => now);
+  let issued = 0;
+  const vault = countingVault();
+  const { account, directory } = setup(t, OneDrive, {
+    clientId: ONEDRIVE_ID, vault,
+    fetchImpl: async (url) => {
+      assert.ok(url.endsWith('/oauth2/v2.0/token'));
+      issued += 1;
+      return json({ access_token: `access-${issued}`, refresh_token: `refresh-${issued}`, expires_in: 3600 });
+    },
+  });
+  account.finishSignIn({ access_token: 'access-0', refresh_token: 'refresh-0', expiresAt: now + 3600000, accountId: 'drive-1', email: 'casey@example.com' });
+  await settle();
+  assert.equal(vault.writes.length, 1);
+  assert.deepEqual(JSON.parse(vault.entries.get(ONEDRIVE_ID)), { refresh_token: 'refresh-0', accountId: 'drive-1', email: 'casey@example.com', key: ONEDRIVE_ID });
+
+  // The first refresh shows Microsoft replaces the token: backed up once more.
+  for (let hour = 0; hour < 24; hour += 1) { now += 3600000; await account.accessToken(true); await settle(); }
+  assert.equal(issued, 24);
+  assert.equal(vault.writes.length, 2);
+  assert.ok(vault.writes.every((write) => !write.secret.includes('access-')), 'access tokens are never backed up');
+
+  // A week later, the backup gets the current refresh token.
+  now += WEEK;
+  await account.accessToken(true); await settle();
+  assert.equal(vault.writes.length, 3);
+  assert.equal(JSON.parse(vault.entries.get(ONEDRIVE_ID)).refresh_token, `refresh-${issued}`);
+
+  // After a reinstall the backup brings the sign-in back, and the first request gets a new access token.
+  fs.rmSync(account.file);
+  const reinstalled = new OneDrive({ directory, safeStorage: safeStorage(), clientId: ONEDRIVE_ID, vault,
+    fetchImpl: async () => json({ access_token: 'access-new', refresh_token: 'refresh-new', expires_in: 3600 }) });
+  t.after(() => reinstalled.cancel());
+  assert.equal(await reinstalled.recover(), true);
+  assert.equal(reinstalled.credentials.access_token, undefined);
+  await settle();
+  assert.equal(vault.writes.length, 3, 'recovering writes nothing back');
+  assert.equal(await reinstalled.accessToken(), 'access-new');
+  await settle();
+  assert.equal(vault.writes.length, 3, 'a backup from this week stays');
+});
+
+test('a recovered refresh token from an earlier week is replaced in the backup on the first refresh', async (t) => {
+  let now = Date.parse('2026-11-16T09:00:00Z');
+  t.mock.method(Date, 'now', () => now);
+  let issued = 0;
+  const vault = countingVault();
+  const fetchImpl = async () => { issued += 1; return json({ access_token: `access-${issued}`, refresh_token: `refresh-${issued}`, expires_in: 3600 }); };
+  const { account, directory } = setup(t, OneDrive, { clientId: ONEDRIVE_ID, vault, fetchImpl });
+  account.finishSignIn({ access_token: 'access-0', refresh_token: 'refresh-0', expiresAt: now, accountId: 'drive-1' });
+  await settle();
+  await account.accessToken(true); await settle();
+  const before = vault.writes.length;
+
+  now += 2 * WEEK;
+  fs.rmSync(account.file);
+  const reinstalled = new OneDrive({ directory, safeStorage: safeStorage(), clientId: ONEDRIVE_ID, vault, fetchImpl });
+  t.after(() => reinstalled.cancel());
+  assert.equal(await reinstalled.recover(), true);
+  await settle();
+  assert.equal(vault.writes.length, before);
+  await reinstalled.accessToken(); await settle();
+  assert.equal(vault.writes.length, before + 1);
+  assert.equal(JSON.parse(vault.entries.get(ONEDRIVE_ID)).refresh_token, `refresh-${issued}`);
+});
+
+test('a refresh token that is kept (Dropbox) is backed up once, however often access is refreshed', async (t) => {
+  let now = Date.parse('2026-11-16T09:00:00Z');
+  t.mock.method(Date, 'now', () => now);
+  const vault = countingVault();
+  const { account } = setup(t, Dropbox, {
+    appKey: DROPBOX_KEY, vault,
+    fetchImpl: async () => json({ access_token: `access-${now}`, expires_in: 14400 }),
+  });
+  account.finishSignIn({ access_token: 'access-0', refresh_token: 'refresh-0', expiresAt: now, accountId: 'dbid:1' });
+  await settle();
+  for (let day = 0; day < 30; day += 1) { now += 24 * 3600000; await account.accessToken(true); await settle(); }
+  assert.equal(vault.writes.length, 1);
+  assert.equal(JSON.parse(vault.entries.get(DROPBOX_KEY)).refresh_token, 'refresh-0');
+
+  // Signing in again is backed up right away.
+  account.finishSignIn({ access_token: 'access-x', refresh_token: 'refresh-x', expiresAt: now, accountId: 'dbid:1' });
+  await settle();
+  assert.equal(vault.writes.length, 2);
+  assert.equal(JSON.parse(vault.entries.get(DROPBOX_KEY)).refresh_token, 'refresh-x');
+});

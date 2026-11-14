@@ -22,6 +22,18 @@ const ENTROPY = 'StepForge Google Drive';
 // Each cloud service, and Wiki.js, has its own slot. Google keeps the
 // original names so existing backups are still found.
 const LABELS = { google: 'Google Drive', onedrive: 'OneDrive', dropbox: 'Dropbox', webdav: 'Nextcloud', wikijs: 'Wiki.js' };
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/*
+ * What decides whether a backup needs writing again, for a sign-in with a
+ * part that changes all the time (a refresh token replaced on every refresh,
+ * a session renewed every half hour): the parts that don't change, plus the
+ * current week. The backup is then rewritten at most once a week instead of
+ * every time that part changes.
+ */
+function weeklyCheck(fields, now = Date.now()) {
+  return JSON.stringify({ ...fields, week: Math.floor(now / WEEK_MS) });
+}
 
 function run(file, args, input, timeout = 15000) {
   return new Promise((resolve, reject) => {
@@ -54,8 +66,9 @@ function secretServiceVault(slot, exec) {
 
 // DPAPI with the CurrentUser scope, kept in the per-user registry. Only this
 // Windows account can decrypt it, and uninstallers leave it in place.
-// SignInSha256 is a fingerprint of the saved sign-in, so a launch that finds
-// the backup current doesn't encrypt it again.
+// SignInSha256 is a fingerprint of the saved sign-in (or of the `check` the
+// caller passes for it), so a backup that is still current isn't encrypted
+// again.
 function dpapiVault(slot, exec) {
   const subkey = slot === 'google' ? 'Software\\StepForge\\GoogleDrive' : `Software\\StepForge\\Cloud-${slot}`;
   const key = `'HKCU:\\${subkey}'`;
@@ -81,16 +94,16 @@ function dpapiVault(slot, exec) {
       ]);
       return out.trim() ? Buffer.from(out.trim(), 'base64').toString('utf8') : null;
     },
-    async write(clientId, secret) {
-      const check = fingerprint(secret);
+    async write(clientId, secret, check = secret) {
+      const print = fingerprint(check);
       const current = await saved();
-      if (current.SignIn && current.SignInSha256 === check) return;
+      if (current.SignIn && current.SignInSha256 === print) return;
       await powershell([
         '$d = [Convert]::FromBase64String([Console]::In.ReadToEnd().Trim())',
         `$p = [Convert]::ToBase64String([Security.Cryptography.ProtectedData]::Protect($d, ${entropy}, 'CurrentUser'))`,
         `if (-not (Test-Path ${key})) { New-Item -Path ${key} -Force | Out-Null }`,
         `Set-ItemProperty -Path ${key} -Name SignIn -Value $p`,
-        `Set-ItemProperty -Path ${key} -Name SignInSha256 -Value '${check}'`,
+        `Set-ItemProperty -Path ${key} -Name SignInSha256 -Value '${print}'`,
       ], Buffer.from(secret, 'utf8').toString('base64'));
     },
     async clear() {
@@ -110,4 +123,4 @@ function createCredentialVault({ platform = process.platform, slot = 'google', e
   return null;
 }
 
-module.exports = { createCredentialVault };
+module.exports = { createCredentialVault, weeklyCheck };
