@@ -223,10 +223,13 @@ class WikiJs {
     const stored = this.stored();
     if (!this.vault || !stored) return;
     const { secret, check } = this.backupOf(stored);
-    if (this.vaulted === check) return;
+    // A recovered sign-in is already the backup, as old as it is: once it
+    // changes, the vault compares the check it saved with it.
+    if (this.vaulted === check || this.recovered === secret) return;
     try {
       await this.vault.write(VAULT_KEY, secret, check);
       this.vaulted = check;
+      this.recovered = null;
     } catch { /* the encrypted file remains the source of the sign-in */ }
   }
 
@@ -238,7 +241,7 @@ class WikiJs {
     try { stored = JSON.parse(await this.vault.read(VAULT_KEY) || 'null'); } catch { return false; }
     if (this.credentials || !stored?.baseUrl || !stored.method) return false;
     this.restore(stored);
-    this.vaulted = this.backupOf(stored).check;
+    this.recovered = this.backupOf(this.stored()).secret;
     try { this.save(); } catch { this.loadError = null; this.onStatus(this.status()); }
     return true;
   }
@@ -273,6 +276,7 @@ class WikiJs {
     this.session = null;
     this.loadError = null;
     this.vaulted = null;
+    this.recovered = null;
     fs.rmSync(this.file, { force: true });
     void this.vault?.clear(VAULT_KEY).catch(() => {});
     this.onStatus(this.status());

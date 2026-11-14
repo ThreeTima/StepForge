@@ -356,6 +356,38 @@ test('a two-step session renewed every half hour is backed up at most once a wee
   assert.equal(writes.length, afterSignIn + 1);
 });
 
+test('a recovered two-step backup keeps its age: the first renewal after recovery is backed up', async (t) => {
+  const server = wiki();
+  server.users['casey@example.com'].tfa = '123456';
+  const writes = [];
+  const kept = new Map();
+  const vault = { read: async (key) => kept.get(key) || null, clear: async (key) => { kept.delete(key); },
+    write: async (key, secret, check) => { if (writes.at(-1) === check && kept.has(key)) return; writes.push(check); kept.set(key, secret); } };
+  let now = Date.now();
+  t.mock.method(Date, 'now', () => now);
+  const { wikijs, directory } = setup(t, server, { vault });
+  await wikijs.connect({ address: 'wiki.example.com', method: 'password', username: 'casey@example.com', password: 'hunter2', code: '123456' });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const backedUp = JSON.parse(kept.get('wikijs')).session.token;
+  const before = writes.length;
+
+  // 13 days later the encrypted file is lost; the backup's session still works (14-day renewal period).
+  now += 13 * 24 * 60 * 60 * 1000;
+  fs.rmSync(path.join(directory, 'wikijs.credentials'));
+  const restarted = new WikiJs({ directory, safeStorage: safeStorage(), fetchImpl: server.fetch, vault });
+  assert.equal(await restarted.recover(), true);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(writes.length, before, 'recovering writes nothing back');
+  assert.equal(restarted.session.token, backedUp);
+
+  // Wiki.js renews it on first use: the new session replaces the 13-day-old one in the backup right away.
+  restarted.session = { token: server.issue('Casey Jones'), expires: now + 30 * 60 * 1000 };
+  restarted.save();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(writes.length, before + 1);
+  assert.equal(JSON.parse(kept.get('wikijs')).session.token, restarted.session.token);
+});
+
 test('when Wiki.js ends a two-step session, publishing asks for a code first, then carries on', async (t) => {
   const server = wiki();
   server.users['casey@example.com'].tfa = '123456';

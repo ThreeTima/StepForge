@@ -95,10 +95,12 @@ class CloudAccount {
     const credentials = this.credentials;
     if (!this.vault || !credentials) return;
     const { secret, check } = this.backupOf(credentials);
-    if (this.vaulted === check) return;
+    // A recovered sign-in is already the backup, as old as it is: once it
+    // changes, the vault compares the check it saved with it.
+    if (this.vaulted === check || this.recovered === secret) return;
     try {
       await this.vault.write(this.key, secret, check);
-      if (this.credentials === credentials) this.vaulted = check;
+      if (this.credentials === credentials) { this.vaulted = check; this.recovered = null; }
     } catch { /* the encrypted primary file remains the source of credentials */ }
   }
 
@@ -112,7 +114,7 @@ class CloudAccount {
       if (this.credentials || this.signIn || !this.accepts(stored)) return false;
       this.credentials = stored;
       this.loadError = null;
-      this.vaulted = this.backupOf(stored).check;
+      this.recovered = this.backupOf(stored).secret;
       try { this.save(); } catch { /* keep the recovered sign-in for this session */ }
       return true;
     })();
@@ -140,6 +142,7 @@ class CloudAccount {
     this.credentials = null;
     this.loadError = null;
     this.vaulted = null;
+    this.recovered = null;
     this.storage.clearCache();
     fs.rmSync(this.file, { force: true });
     return this.vault?.clear(this.key).catch(() => {});

@@ -450,7 +450,11 @@ function countingVault() {
   return {
     entries, writes,
     read: async (key) => entries.get(key) || null,
-    write: async (key, secret, check) => { writes.push({ secret, check }); entries.set(key, secret); },
+    // Like the Windows vault: a write whose check matches the saved one encrypts nothing.
+    write: async (key, secret, check) => {
+      if (writes.at(-1)?.check === check && entries.has(key)) return;
+      writes.push({ secret, check }); entries.set(key, secret);
+    },
     clear: async (key) => { entries.delete(key); },
   };
 }
@@ -494,7 +498,35 @@ test('a refresh token replaced on every refresh is backed up at most once a week
   t.after(() => reinstalled.cancel());
   assert.equal(await reinstalled.recover(), true);
   assert.equal(reinstalled.credentials.access_token, undefined);
+  await settle();
+  assert.equal(vault.writes.length, 3, 'recovering writes nothing back');
   assert.equal(await reinstalled.accessToken(), 'access-new');
+  await settle();
+  assert.equal(vault.writes.length, 3, 'a backup from this week stays');
+});
+
+test('a recovered refresh token from an earlier week is replaced in the backup on the first refresh', async (t) => {
+  let now = Date.parse('2026-11-16T09:00:00Z');
+  t.mock.method(Date, 'now', () => now);
+  let issued = 0;
+  const vault = countingVault();
+  const fetchImpl = async () => { issued += 1; return json({ access_token: `access-${issued}`, refresh_token: `refresh-${issued}`, expires_in: 3600 }); };
+  const { account, directory } = setup(t, OneDrive, { clientId: ONEDRIVE_ID, vault, fetchImpl });
+  account.finishSignIn({ access_token: 'access-0', refresh_token: 'refresh-0', expiresAt: now, accountId: 'drive-1' });
+  await settle();
+  await account.accessToken(true); await settle();
+  const before = vault.writes.length;
+
+  now += 2 * WEEK;
+  fs.rmSync(account.file);
+  const reinstalled = new OneDrive({ directory, safeStorage: safeStorage(), clientId: ONEDRIVE_ID, vault, fetchImpl });
+  t.after(() => reinstalled.cancel());
+  assert.equal(await reinstalled.recover(), true);
+  await settle();
+  assert.equal(vault.writes.length, before);
+  await reinstalled.accessToken(); await settle();
+  assert.equal(vault.writes.length, before + 1);
+  assert.equal(JSON.parse(vault.entries.get(ONEDRIVE_ID)).refresh_token, `refresh-${issued}`);
 });
 
 test('a refresh token that is kept (Dropbox) is backed up once, however often access is refreshed', async (t) => {
