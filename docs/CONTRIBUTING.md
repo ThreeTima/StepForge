@@ -145,6 +145,11 @@ scripts in `scripts/linux/` install; without them those checks are skipped.
 - Name and describe tests clearly so that whoever breaks one later understands
   what it protects.
 
+DOCX pagination tests inspect exported documents on every platform. When
+`libreoffice`, `pdftotext` and `pdfimages` are on `PATH`, the suite also renders
+synthetic guides and checks their page boundaries. Those rendering checks are
+reported as skipped when the optional tools are unavailable.
+
 CI (`.github/workflows/ci.yml`) runs the same suite on Ubuntu, Fedora and
 Windows. How the jobs split the work is described in
 [ARCHITECTURE.md](ARCHITECTURE.md#tests-and-ci).

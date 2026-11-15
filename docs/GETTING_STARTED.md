@@ -311,6 +311,14 @@ an item to go to that step, or export anyway.
 | **Image bundle** | Numbered, annotated PNGs for use anywhere |
 | **JSON** | Feeding guides into your own tools |
 
+In **DOCX**, a step's heading, instructions, screenshot and short notes stay
+together when they fit on a page. Substeps can flow onto separate pages; keeping
+a step together does not keep an entire process together. Long instructions
+can continue across pages, and a screenshot taller than the printable page
+is displayed smaller without changing the image itself. The step's **New
+page** setting still starts it on a fresh page. Word and LibreOffice can
+paginate differently, especially with different fonts.
+
 For **Markdown**, choose **Write for** under *Compatibility* to match where the
 page will live: **GitHub** (callouts as GitHub alerts), **Azure DevOps wiki**
 (with a maximum screenshot width), **MkDocs** (`!!!` admonitions and a title in
