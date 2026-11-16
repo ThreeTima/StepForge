@@ -108,7 +108,9 @@ function paginateStep(parts, screenshot, { hasChildren, forceNewPage }) {
   // break, before its first paragraph, rather than stranding that callout.
   if (forceNewPage && headingIndex > 0 && parts[0].startsWith('<w:p>')) {
     parts[headingIndex] = parts[headingIndex].replace('<w:pageBreakBefore/>', '');
-    parts[0] = paragraphKeeps(parts[0], true, true).replace('</w:pPr>', '<w:pageBreakBefore/></w:pPr>');
+    // CT_PPr is an ordered sequence: pageBreakBefore must follow keepLines and
+    // precede the callout's border and shading.
+    parts[0] = paragraphKeeps(parts[0], true, true).replace('<w:keepLines w:val="1"/>', '$&<w:pageBreakBefore/>');
   }
   const heights = parts.map((xml) => blockHeight(xml));
   let end = imageIndex;
@@ -158,8 +160,11 @@ function drawing(relId, widthPx, heightPx, maxWidthTwips, alt, name = `Screensho
   // scale to maxWidth (twips -> px at 96dpi: twips/15)
   const maxWpx = maxWidthTwips / 15;
   let w = widthPx, h = heightPx;
-  if (w > maxWpx) { h = Math.round((h * maxWpx) / w); w = Math.round(maxWpx); }
-  const cx = Math.round(w * EMU_PER_PX), cy = Math.round(h * EMU_PER_PX);
+  if (w > maxWpx) { h = (h * maxWpx) / w; w = maxWpx; }
+  // Whole pixels as before, but a very narrow picture keeps its sub-pixel
+  // width rather than rounding to an invisible zero extent.
+  const px = (v) => (v >= 1 ? Math.round(v) : v);
+  const cx = Math.max(1, Math.round(px(w) * EMU_PER_PX)), cy = Math.max(1, Math.round(px(h) * EMU_PER_PX));
   return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0">` +
     `<wp:extent cx="${cx}" cy="${cy}"/><wp:docPr id="${relId}" name="${escapeXml(name)}" descr="${escapeXml(alt)}"/>` +
     `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
@@ -519,7 +524,7 @@ function exportDocx(ast, outDir, template = {}) {
       stepImageCount += 1;
       // Very tall pictures must still fit a printable page. Limit only their
       // on-page extent; the embedded PNG bytes and annotations are untouched.
-      const boundedWidth = Math.min(maxTwips, Math.floor((img.width / img.height) * (PRINTABLE_HEIGHT_TWIPS - 1440)));
+      const boundedWidth = Math.min(maxTwips, (img.width / img.height) * (PRINTABLE_HEIGHT_TWIPS - 1440));
       screenshotParagraph = p(drawing(relId, img.width, img.height, boundedWidth, step.altText, undefined, { border: shots.border ? shots.borderColor : '' }), alignProps);
       return screenshotParagraph;
     };

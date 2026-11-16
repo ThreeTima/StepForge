@@ -109,6 +109,8 @@ test('DOCX pagination: a forced-page step starts with its before-title callout',
   const p = body.match(/<w:p>[\s\S]*?<\/w:p>/g);
   assert.match(props(p[0]), /<w:pageBreakBefore\/>/);
   assert.doesNotMatch(props(p[1]), /<w:pageBreakBefore\/>/);
+  // CT_PPr order: keepLines, pageBreakBefore, then the callout's border/shading.
+  assert.match(props(p[0]), /<w:keepLines w:val="1"\/><w:pageBreakBefore\/><w:shd\b/);
 });
 
 test('DOCX pagination: fitting side-by-side rows stay atomic, oversized rows can split', t => {
@@ -138,6 +140,17 @@ test('DOCX pagination: tall pictures fit their page without rewriting annotated 
   const expected = encodePng(renderStepImage(r.ast.steps[0]));
   const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
   assert.equal(hash(png), hash(expected));
+});
+
+test('DOCX pagination: very narrow tall pictures keep visible, proportional extents', t => {
+  const r = exported(t, [1, 2].map(i => ({ title: `Narrow example ${i}`, screenshot: [1, i === 1 ? 2000 : 20000] })));
+  const extents = [...r.xml.matchAll(/<wp:extent cx="(\d+)" cy="(\d+)"/g)].map(m => [Number(m[1]), Number(m[2])]);
+  assert.equal(extents.length, 2);
+  for (const [cx, cy] of extents) {
+    assert.ok(cx > 0 && cy > 0, `extent ${cx}x${cy} is visible`);
+    assert.ok(cy / 635 <= 13130, 'fits the printable height');
+  }
+  assert.ok(Math.abs(extents[0][1] / extents[0][0] - 2000) / 2000 < 0.01, 'aspect ratio is preserved');
 });
 
 test('DOCX pagination: Normal has no global keeps and Heading styles retain their keeps', t => {
